@@ -1,0 +1,161 @@
+---
+title: "Mixed logistic regression model of #uglyselfies data"
+output: html_document
+---
+
+## Introduction
+
+In this dataset, we will be analyzing data from an experiment conducted by Ruth Page (University of Birmingham). This experiment is designed to investigate the #uglyselfie phenomenon where people make themselves deliberately ugly in a selfie for ironic purposes. In this experiment, participants were shown selfies that differed along numerous experimentally controlled dimensions. The dataset that you are given is simplified so that we only consider one dimension, namely, whether the "Angle" of the camera was from below or level. The prediction is that ugliness ratings are higher if the picture is taken from below.
+
+The actual data was a rating study with a rating scale from 1 to 5. Here, for pedagogical reasons only, we are going to consider a dichotomized response variable just so that we can fit a mixed logistic regression. Otherwise an "ordinal" model would be appropriate here, but mixed ordinal regression isn't implemented in lme4. In the actual analysis, we fitted a Bayesian mixed ordinal regression model. I can highly recommend Paul Bürkner's tutorial on ordinal models.
+
+The full analysis can be accessed: https://github.com/bodowinter/uglyselfies_experiment
+(Notice that for the final plots of the ordinal model coefficients, they are erroneously labelled as log odds — will fix this when I find the time)
+
+## Preprocessing & exploration
+
+```{r warning=F, message=F, echo=T}
+
+# Load tidyverse, lme4, and afex:
+
+library(tidyverse)
+library(lme4)
+library(afex)
+
+# Load in the iconicity dataset:
+
+ugly <- read_csv('ruth_page_selfies.csv')
+
+# Check dataset:
+
+ugly
+```
+
+First, let's explore this dataset a bit. How many participants were there?
+
+
+```{r warning=F, message=F, echo=T}
+
+# Number of participants:
+
+length(unique(ugly$ID))
+```
+
+98 participants!
+
+Tabulate the "UglyCat" response as a function of angle:
+
+```{r}
+
+# Average ugliness by tilt:
+
+ugly %>% count(Angle, UglyCat)
+```
+
+There is an NA! Exclude this NA!
+
+```{r}
+ugly <- filter(ugly, !is.na(UglyCat))
+```
+
+## Mixed model analysis
+
+For logistic regression we need the "UglyCat" column to be a factor:
+
+```{r}
+ugly <- mutate(ugly,
+               UglyCat = factor(UglyCat))
+```
+
+
+Let's construct a mixed model for this. We start by loading in lme4. Then we specify the model. Explanations about the model specification follow.
+
+```{r warning=F, message=F, echo = T}
+ugly_mdl <- glmer(UglyCat ~ Angle + (1 + Angle|ID),
+	data = ugly, family = binomial)
+```
+
+We use REML = FALSE merely because we want to perform likelihood ratio tests for fixed effects. This is a technical detail.
+
+More important to us here is the model specification. "Angle" is the main fixed effect, and "UglyCat" is modeled as a function of this categorical predictor. Then, we need random intercepts for "ID" since some participants may have overall more or less ugly responses. On the other hand, theoretically it seems absolutely necessary to also have by-participant varying slopes for the Angle effect. After all, we can expect people to vary in how much the Angle manipulation affects them: some more than others.
+
+However, we obtained a convergence warning. That's not good! We absolutely can't ignore this convergence warning. So we are actually not going to look at the model (it is of absolutely no use to us — looking at the model now just invites temptation).
+
+Instead, let's try to fix the warning message. For this, we are going to use the **all_fit()** function from the afex package:
+
+```{r}
+all_fit(ugly_mdl)
+```
+
+Apparently the model converges for the "bobyqa" optimizer:
+
+```{r}
+ugly_mdl <- glmer(UglyCat ~ Angle + (1 + Angle|ID),
+	data = ugly, family = binomial,
+	control = glmerControl(optimizer = 'bobyqa'))
+```
+
+No more warning messages! Let's inspect this model. Unfortunately broom won't help us here:
+
+```{r}
+summary(ugly_mdl)
+```
+
+What is this model predicting?
+
+```{r}
+levels(ugly$UglyCat)
+```
+
+So this model is predicting the probability of observing an "ugly" response. The negative coefficient then means that when the angle is level, as opposed to "from below", the probability of observing an "ugly" response drops.
+
+We can extract the fixed effects like this:
+
+```{r}
+fixef(ugly_mdl)
+```
+
+This can be used to generate predictions for both categories:
+
+```{r}
+# From below:
+
+plogis(fixef(ugly_mdl)[1])
+
+# Level:
+
+plogis(fixef(ugly_mdl)[1] + fixef(ugly_mdl)[2])
+```
+
+The "(Intercept)" is simply there because for named vectors, R carries the name of the first object over if they are added.
+
+## Likelihood ratio test
+
+We first do a likelihood ratio test by hand, for which we need to construct a null model without the Angle fixed effect:
+
+```{r}
+ugly_null <- glmer(UglyCat ~ 1 + (1 + Angle|ID),
+	data = ugly, family = binomial,
+	control = glmerControl(optimizer = 'bobyqa'))
+```
+
+Then we perform the two using **anova()**:
+
+```{r}
+anova(ugly_null, ugly_mdl, test = 'Chisq')
+```
+
+Alternatively, we can do all of this in one step without having to construct null models by hand using the **mixed()** function from the afex package, which is a wrapper around **lmer()**:
+
+```{r}
+ugly_afex <- mixed(UglyCat ~ Angle + (1 + Angle|ID),
+	data = ugly, family = binomial,
+	method = 'LRT',
+	control = glmerControl(optimizer = 'bobyqa'))
+
+# Check:
+
+ugly_afex
+```
+
+

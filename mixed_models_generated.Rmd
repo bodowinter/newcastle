@@ -1,0 +1,268 @@
+---
+title: "Mixed models with hand-generated data"
+output: html_document
+---
+
+## Introduction
+
+Here, we will generate our own dataset that we will then analyze with a mixed model. This is going to be a fairly tedious exercise, but the conceptual pay-off is great, as it allows us to understand mixed models much better, as well as the way different sources of variation impact an analysis.
+
+## Preliminaries
+
+Load packages:
+
+```{r, message = FALSE}
+library(tidyverse)
+library(lme4)
+library(afex)
+```
+
+## Generating data
+
+First, we set the seed number to a nice number. It can be any number, but so as long as we use the same, we'll all get the same results:
+
+```{r}
+set.seed(666)	# I chose the number "666"
+```
+
+## Generating predictors
+
+Next, let's assume that we have 6 participants, each one of which responded to 20 items. We want to look at whether more frequent words have shorter vowels. That is, we want to regress vowel duration onto frequency, but controlling for participant and item variability.
+
+So when constructing the data, we first need to construct labels for participants and items. Then we will use those to generate random data that is participant- and item-specific. We will then put everything together with the actual frequency effect and want to see whether mixed models can uncover the relevant variance components.
+
+```{r}
+
+## Create identifiers for 6 subjects with 20 trials each:
+
+subs <- paste0('S_', 1:6)
+subs <- rep(subs, 20)		# repeat subject identifiers for 20 items
+subs <- sort(subs)
+
+## Create 20 items:
+
+its <- paste0('Item_', 1:20)
+its <- rep(its, 6)	# repeat item identifiers for 6 subjects
+```
+
+Remember that in R, you should never believe it does as intended. So check that the vectors have the same length, which has to be the case if we merge them together later:
+
+```{r}
+length(subs)
+length(its)
+```
+
+Works!
+
+Next, we create the log frequency predictor:
+
+```{r}
+logfreq <- round(rexp(20) * 5 , 2)		# 20 random numbers
+logfreq <- rep(logfreq, 6)	# repeated 6 times
+```
+
+Here I use the rexp() function to generate random exponentially distributed numbers and I multiplied this times 5 because that made the numbers look more realistic. The multiplication by 5 is absolutely non-essential. It's just there to make the thing look better.
+
+Put all of this into a tibble 'xdata':
+
+```{r}
+xdata <- tibble(
+  Subject = subs,
+  Item = its,
+  Freq = logfreq)
+
+# Check:
+
+xdata
+```
+
+## Generating response
+
+Create an overall mean, say 300 ms:
+
+```{r}
+xdata$Mean <- 300
+```
+
+Create subject mean adjustments (these will be the random intercepts for subjects):
+
+```{r}
+submeans <- rep(rnorm(6, sd = 40), 20)	# notice SD
+submeans <- sort(submeans)
+```
+
+Remember that the rnorm() function assumes mean == 0 unless otherwise specified.
+
+Append these subject deviations to the dataframe:
+
+```{r}
+xdata$SubMeans <- submeans
+```
+
+Create item mean adjustments:
+
+```{r}
+itemmeans <- rep(rnorm(20, sd = 20), 6)
+xdata$ItemMeans <- itemmeans
+```
+
+Add general error term (trial by trial):
+
+```{r}
+xdata$Error <- rnorm(120, sd = 20)
+```
+
+Next, the actual effect, 5 ms decrease per log frequency:
+
+```{r}
+xdata <- mutate(xdata,
+                Effect = -5 * Freq)
+```
+
+Check what we have:
+
+```{r}
+xdata
+```
+
+Put it all together in a measure "vowel duration":
+
+```{r}
+xdata <- mutate(xdata,
+                Dur = Mean + SubMeans + ItemMeans + Error + Effect)
+```
+
+Check:
+
+```{r}
+xdata
+```
+
+For demonstration purposes, let's get rid of the columns that we used to create that response measure:
+
+```{r}
+xdata <- select(xdata,
+                -(Mean:Effect))
+
+# Check:
+
+xdata
+```
+
+This is what you would see as the researcher!
+
+But notice how the subject means, the item means, the trial-by-trial error and the effect are all compressed into this one measure "Dur". The task of the mixed model is then to estimate the different variance components.
+
+## Mixed model analysis
+
+Fit a model with by-subject and by-item varying intercepts:
+
+```{r}
+xmdl <- lmer(Dur ~ Freq + (1|Subject) + (1|Item),
+             data = xdata, REML = FALSE)
+```
+
+We specify 'REML = F' to get maximum likelihood rather than restricted maximum likelihood. This is a very technical detail.
+
+Check the output:
+
+```{r}
+summary(xmdl)
+```
+
+First look at the random effects variance. Notice that the item variation is close to what we specified (SD = 20). And so is the subject variation (which we specified to be SD = 40).
+ The general error term is also reasonably close (was SD = 20). The deviations from what we randomly generated is not the model being 'wrong' but just random fluctuations given that we used random function.
+
+Then look at the fixed effect estimate, which is nicely close to -5.
+
+Let's have a look at the by-individual random effects estimates:
+
+```{r}
+coef(xmdl)
+```
+
+We can get the subjects only by using the dollar sign to index this list:
+
+```{r}
+coef(xmdl)$Subject
+```
+
+## Messing up the model:
+
+Let's drop the random intercept for items:
+
+```{r}
+xmdl_bad <- lmer(Dur ~ Freq + (1|Subject),
+                 data = xdata, REML = FALSE)
+summary(xmdl_bad)
+```
+
+Notice the increase in the residual error. This is because the item variation that was previously controlled for is now inside that error.
+
+Also, if you compare the following two:
+
+```{r}
+summary(xmdl)$coefficients
+summary(xmdl_bad)$coefficients
+```
+
+You will notice that the absolute t-value is much larger for the 'bad' model that excluded the random intercept for items.
+This is almost always going to be the case: If you drop important random effects your confidence in the other effects in the model will increase (and you will likely be anti-conservative). This is not a good thing.
+
+Let's add a random slope for by-subject variation in the frequency effect and see what happens:
+
+```{r}
+xmdl_slope <- lmer(Dur ~ Freq + (1 + Freq|Subject) + (1|Item),
+                   data = xdata, REML = FALSE)
+```
+
+Warning message, boundary fit! Let's think about this before even looking at this bad model... well, when we generated the data, we didn't specify anything in relation to random slopes. We only generated the data with random intercepts! So the only random slope variation that exists in this data arises from using random functions, but it does not seem to be enough to be estimable.
+
+Check the output — usually we should not interpret this given that this is a non-converging model, but it'll be useful for us to have a look at this for pedagogical reasons.
+
+```{r}
+summary(xmdl_slope)
+```
+
+Notice that the standard deviation for the frequency effect is really really small.
+
+Check the random effects estimates for subjects:
+
+```{r}
+coef(xmdl_slope)$Subject
+```
+
+Notice how now, the frequency effect has different values (different slopes) for different subjects.
+
+Compare this to the original model without the slopes:
+
+```{r}
+coef(xmdl)$Subject
+```
+
+For this random intercept-only model, the slope is fixed.
+
+## Likelihood ratio tests with the mixed model:
+
+Using the 'xmdl' that we started with, let's create the corresponding null model:
+
+```{r}
+xmdl_null <- lmer(Dur ~ 1 + (1|Subject) + (1|Item),
+                  data = xdata, REML = FALSE)
+```
+
+Perform likelihood ratio test:
+
+```{r}
+anova(xmdl_null, xmdl, test = 'Chisq')
+```
+
+Alternatively, do this with afex so that you don't have to specify the null model by hand. This is particularly useful when you have models with lots of predictors. afex will created all nested models where particular fixed effects are excluded and then perform the corresponding likelihood ratio tests. The functio for this is "mixed()"
+
+```{r}
+xmdl_afex <- mixed(Dur ~ Freq + (1|Subject) + (1|Item),
+                   data = xdata, method = 'LRT')
+xmdl_afex
+```
+
+
